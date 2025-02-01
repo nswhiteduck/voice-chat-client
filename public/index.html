@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Voice Chat</title>
+</head>
+<body>
+    <button id="joinButton">Join Voice Chat</button>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const roomId = 'myroom'; // Change this for private rooms
+        
+        const peers = {};
+        let localStream;
+
+        // Get microphone access
+        async function init() {
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+
+        // Join room
+        document.getElementById('joinButton').onclick = async () => {
+            await init();
+            socket.emit('join', roomId);
+        };
+
+        // WebRTC handling
+        socket.on('user-connected', async userId => {
+            const peer = new RTCPeerConnection();
+            peers[userId] = peer;
+            
+            localStream.getTracks().forEach(track => peer.addTrack(track, localStream));
+            
+            peer.onicecandidate = ({ candidate }) => {
+                if (candidate) {
+                    socket.emit('signal', {
+                        target: userId,
+                        candidate
+                    });
+                }
+            };
+
+            const offer = await peer.createOffer();
+            await peer.setLocalDescription(offer);
+            
+            socket.emit('signal', {
+                target: userId,
+                offer: peer.localDescription
+            });
+        });
+
+        socket.on('signal', async ({ offer, answer, candidate }) => {
+            const peer = new RTCPeerConnection();
+            
+            if (offer) {
+                await peer.setRemoteDescription(offer);
+                const answer = await peer.createAnswer();
+                await peer.setLocalDescription(answer);
+                
+                socket.emit('signal', {
+                    target: offer.userId,
+                    answer
+                });
+            }
+            
+            if (answer) {
+                await peer.setRemoteDescription(answer);
+            }
+            
+            if (candidate) {
+                peer.addIceCandidate(new RTCIceCandidate(candidate));
+            }
+        });
+    </script>
+</body>
+</html>
