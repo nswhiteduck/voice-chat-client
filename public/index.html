@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Replit Voice Chat</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; }
+        #status { color: #666; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Voice Chat</h1>
+    <button id="joinButton">Join Room</button>
+    <button id="muteButton" disabled>Mute</button>
+    <div id="status">Not connected</div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const roomId = 'global-room';
+        let localStream;
+        const peers = {};
+
+        // WebRTC Configuration (Global STUN servers)
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478?transport=udp' }
+            ]
+        };
+
+        // Initialize microphone
+        async function initMicrophone() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    } 
+                });
+                document.getElementById('muteButton').disabled = false;
+                document.getElementById('status').textContent = 'Connected!';
+            } catch (error) {
+                alert('Error accessing microphone!');
+                console.error(error);
+            }
+        }
+
+        // Join room
+        document.getElementById('joinButton').onclick = async () => {
+            await initMicrophone();
+            socket.emit('join', roomId);
+        };
+
+        // Mute functionality
+        document.getElementById('muteButton').onclick = () => {
+            const isMuted = localStream.getAudioTracks()[0].enabled;
+            localStream.getAudioTracks().forEach(track => track.enabled = !isMuted);
+            document.getElementById('muteButton').textContent = isMuted ? 'Unmute' : 'Mute';
+        };
+
+        // WebRTC Handlers
+        socket.on('user-connected', userId => {
+            const peer = new RTCPeerConnection(rtcConfig);
+            peers[userId] = peer;
+
+            // Add local stream
+            localStream.getTracks().forEach(track => peer.addTrack(track, localStream));
+
+            // ICE Candidate handling
+            peer.onicecandidate = ({ candidate }) => {
+                if (candidate) {
+                    socket.emit('signal', {
+                        target: userId,
+                        candidate
+                    });
+                }
+            };
+
+            // Create offer
+            peer.createOffer()
+                .then(offer => peer.setLocalDescription(offer))
+                .then(() => {
+                    socket.emit('signal', {
+                        target: userId,
+                        offer: peer.localDescription
+                    });
+                });
+        });
+
+        socket.on('signal', async ({ offer, answer, candidate, target }) => {
+            if (!peers[target]) {
+                const peer = new RTCPeerConnection(rtcConfig);
+                peers[target] = peer;
+
+                peer.onicecandidate = ({ candidate }) => {
+                    if (candidate) {
+                        socket.emit('signal', {
+                            target: target,
+                            candidate
+                        });
+                    }
+                };
+
+                peer.ontrack = ({ streams }) => {
+                    // Remote stream available (not used for audio-only, but needed)
+                };
+            }
+
+            const peer = peers[target];
+            try {
+                if (offer) {
+                    await peer.setRemoteDescription(offer);
+                    const answer = await peer.createAnswer();
+                    await peer.setLocalDescription(answer);
+                    socket.emit('signal', {
+                        target: target,
+                        answer
+                    });
+                } else if (answer) {
+                    await peer.setRemoteDescription(answer);
+                } else if (candidate) {
+                    await peer.addIceCandidate(new RTCIceCandidate(candidate));
+                }
+            } catch (err) {
+                console.error('Signal error:', err);
+            }
+        });
+
+        // Cleanup on disconnect
+        socket.on('user-disconnected', userId => {
+            if (peers[userId]) {
+                peers[userId].close();
+                delete peers[userId];
+            }
+        });
+    </script>
+</body>
+</html>
